@@ -42,6 +42,9 @@ import com.mobile.pdfeditor.data.PdfImporter
 import com.mobile.pdfeditor.data.RecentFilesRepository
 import com.mobile.pdfeditor.data.SignatureLibrary
 import com.mobile.pdfeditor.ui.home.HomeScreen
+import com.mobile.pdfeditor.ui.tools.OpenMode
+import com.mobile.pdfeditor.ui.tools.ToolHost
+import com.mobile.pdfeditor.ui.tools.ToolId
 import com.mobile.pdfeditor.ui.tools.ToolsScreen
 import com.mobile.pdfeditor.ui.viewer.ViewerScreen
 import kotlinx.coroutines.launch
@@ -68,6 +71,9 @@ fun AppRoot(
     var importing by remember { mutableStateOf<IncomingPdf?>(null) }
     /** Shown once by the viewer after an import ("Saved to Downloads/…"). */
     var viewerNotice by remember { mutableStateOf<String?>(null) }
+    var toolRequest by remember { mutableStateOf<ToolId?>(null) }
+    /** Mode to open the next document in (from a tool), consumed by the viewer. */
+    var openMode by remember { mutableStateOf(OpenMode.View) }
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -124,6 +130,8 @@ fun AppRoot(
             onBack = { openDocument = null; viewerDirty = false },
             onOpenDocument = { openDocument = it },
             onDirtyChange = { viewerDirty = it },
+            startMode = openMode,
+            onStartModeUsed = { openMode = OpenMode.View },
             notice = viewerNotice,
             onNoticeShown = { viewerNotice = null },
         )
@@ -153,16 +161,29 @@ fun AppRoot(
                     onOpenPicker = pickPdf,
                     onOpenFile = { openDocument = it },
                     onOpenLink = { open(IncomingPdf.Link(it)) },
+                    onTool = { toolRequest = it },
                     showMessage = showMessage,
                     modifier = Modifier.padding(padding),
                 )
                 Tab.Tools -> ToolsScreen(
-                    showMessage = showMessage,
+                    onTool = { toolRequest = it },
                     modifier = Modifier.padding(padding),
                 )
             }
         }
     }
+
+    ToolHost(
+        request = toolRequest,
+        onRequestHandled = { toolRequest = null },
+        onOpen = { uri, mode ->
+            if (mode != OpenMode.View) recents.persistAccess(uri)
+            openMode = mode
+            viewerDirty = false
+            openDocument = uri.toString()
+        },
+        showMessage = { msg -> if (openDocument != null) viewerNotice = msg else showMessage(msg) },
+    )
 
     importing?.let { item ->
         AlertDialog(

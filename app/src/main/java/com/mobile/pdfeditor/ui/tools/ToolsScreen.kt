@@ -45,41 +45,41 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mobile.pdfeditor.ui.theme.SectionLabel
 
-private data class Tool(val name: String, val desc: String, val icon: ImageVector)
+private data class Tool(val id: ToolId, val name: String, val desc: String, val icon: ImageVector)
 private data class ToolGroup(val title: String, val tint: Color, val ink: Color, val tools: List<Tool>)
 
 private val groups = listOf(
     ToolGroup(
         "Organize", Color(0xFFE8EEFC), Color(0xFF1E47B0),
         listOf(
-            Tool("Merge", "Combine PDFs", Icons.Outlined.Layers),
-            Tool("Split", "By range or size", Icons.AutoMirrored.Outlined.CallSplit),
-            Tool("Compress", "Shrink file size", Icons.Outlined.Compress),
-            Tool("Reorder", "Move, rotate pages", Icons.Outlined.SwapVert),
+            Tool(ToolId.Merge, "Merge", "Combine PDFs", Icons.Outlined.Layers),
+            Tool(ToolId.Split, "Split", "By page or range", Icons.AutoMirrored.Outlined.CallSplit),
+            Tool(ToolId.Compress, "Compress", "Shrink file size", Icons.Outlined.Compress),
+            Tool(ToolId.Reorder, "Reorder", "Move, rotate pages", Icons.Outlined.SwapVert),
         ),
     ),
     ToolGroup(
         "Create & convert", Color(0xFFE3F4EC), Color(0xFF13693A),
         listOf(
-            Tool("Scan to PDF", "Camera, auto-crop", Icons.Outlined.DocumentScanner),
-            Tool("Images to PDF", "From gallery", Icons.Outlined.AddPhotoAlternate),
-            Tool("PDF to images", "PNG or JPG", Icons.Outlined.Image),
-            Tool("OCR", "Make text searchable", Icons.Outlined.FindInPage),
+            Tool(ToolId.Scan, "Scan to PDF", "Camera, auto-crop", Icons.Outlined.DocumentScanner),
+            Tool(ToolId.ImagesToPdf, "Images to PDF", "From gallery", Icons.Outlined.AddPhotoAlternate),
+            Tool(ToolId.PdfToImages, "PDF to images", "PNG or JPG", Icons.Outlined.Image),
+            Tool(ToolId.Ocr, "OCR", "Make text searchable", Icons.Outlined.FindInPage),
         ),
     ),
     ToolGroup(
         "Protect", Color(0xFFFDEDE3), Color(0xFF9A3D0B),
         listOf(
-            Tool("Password", "Lock or unlock", Icons.Outlined.Lock),
-            Tool("Redact", "Black out text", Icons.Outlined.VisibilityOff),
-            Tool("Watermark", "Text or image", Icons.Outlined.WaterDrop),
-            Tool("Flatten", "Lock annotations", Icons.Outlined.LayersClear),
+            Tool(ToolId.Password, "Password", "Lock or unlock", Icons.Outlined.Lock),
+            Tool(ToolId.Redact, "Redact", "Remove text for good", Icons.Outlined.VisibilityOff),
+            Tool(ToolId.Watermark, "Watermark", "Text on every page", Icons.Outlined.WaterDrop),
+            Tool(ToolId.Flatten, "Flatten", "Lock annotations", Icons.Outlined.LayersClear),
         ),
     ),
 )
 
 @Composable
-fun ToolsScreen(showMessage: (String) -> Unit, modifier: Modifier = Modifier) {
+fun ToolsScreen(onTool: (ToolId) -> Unit, modifier: Modifier = Modifier) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -107,7 +107,7 @@ fun ToolsScreen(showMessage: (String) -> Unit, modifier: Modifier = Modifier) {
                 )
             }
             items(group.tools) { tool ->
-                ToolCard(tool, group, onClick = { showMessage("${tool.name} is coming soon") })
+                ToolCard(tool, group, onClick = { onTool(tool.id) })
             }
         }
     }

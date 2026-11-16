@@ -90,6 +90,7 @@ fun HomeScreen(
     onOpenPicker: () -> Unit,
     onOpenFile: (String) -> Unit,
     onOpenLink: (String) -> Unit,
+    onTool: (com.mobile.pdfeditor.ui.tools.ToolId) -> Unit,
     showMessage: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -139,9 +140,9 @@ fun HomeScreen(
             }
             item {
                 QuickActions(
-                    onScan = { showMessage("Scanning is coming soon") },
+                    onScan = { onTool(com.mobile.pdfeditor.ui.tools.ToolId.Scan) },
                     onImport = onOpenPicker,
-                    onMerge = { showMessage("Merge is coming soon") },
+                    onMerge = { onTool(com.mobile.pdfeditor.ui.tools.ToolId.Merge) },
                     onSign = { showMessage("Open a PDF first, then tap Sign") },
                 )
             }

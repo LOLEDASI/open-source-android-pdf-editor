@@ -18,6 +18,7 @@ import com.mobile.pdfeditor.data.RecentFilesRepository
 import com.mobile.pdfeditor.pages.PagePlan
 import com.mobile.pdfeditor.pdf.InkPdfIo
 import com.mobile.pdfeditor.pdf.PageOps
+import com.mobile.pdfeditor.pdf.PdfTools
 import com.mobile.pdfeditor.pdf.PdfDocumentHandle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,8 @@ sealed interface ViewerUiState {
     data object Loading : ViewerUiState
     data class Error(val message: String) : ViewerUiState
     data class Ready(val name: String, val pageSizes: List<Size>) : ViewerUiState
+    /** Encrypted with a password; the user can enter it to save an unlocked copy. */
+    data class Locked(val name: String) : ViewerUiState
 }
 
 sealed interface InkStatus {
@@ -119,9 +122,16 @@ class ViewerController(
             _state.value = ViewerUiState.Ready(meta.name, doc.pageSizes)
             loadInk(doc.pageCount)
         } catch (_: SecurityException) {
-            _state.value = ViewerUiState.Error(
-                "This PDF is password-protected or the app no longer has permission to open it.",
-            )
+            val locked = withContext(Dispatchers.IO) {
+                try {
+                    val f = PdfTools.copyToCache(context, uri)
+                    PdfTools.needsPassword(f).also { f.delete() }
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            _state.value = if (locked) ViewerUiState.Locked(meta.name)
+            else ViewerUiState.Error("The app no longer has permission to open this file. Open it again from your files.")
         } catch (_: java.io.FileNotFoundException) {
             _state.value = ViewerUiState.Error("This file was moved or deleted.")
         } catch (_: Exception) {
@@ -271,6 +281,39 @@ class ViewerController(
         textDoc = null
         textDocFile?.delete()
         textDocFile = null
+    }
+
+    private val output = com.mobile.pdfeditor.data.OutputStore(context)
+
+    /** Saves an unlocked copy to Downloads/PDF Editor. @throws WrongPasswordException */
+    suspend fun unlockCopy(password: String): Uri = withContext(Dispatchers.IO) {
+        val src = PdfTools.copyToCache(context, uri)
+        val out = java.io.File.createTempFile("unlocked-", ".pdf", context.cacheDir)
+        try {
+            PdfTools.unlock(src, out, password)
+            output.savePdf(out, "${displayName.removeSuffix(".pdf").removeSuffix(".PDF")} (unlocked).pdf")
+        } finally {
+            src.delete()
+            out.delete()
+        }
+    }
+
+    /**
+     * Saves a redacted copy (with current annotations baked in) to Downloads/PDF Editor.
+     * The original file isn't touched.
+     */
+    suspend fun redactCopy(boxes: Map<Int, List<com.mobile.pdfeditor.annot.PageRect>>): Uri {
+        val annotated = InkPdfIo.write(context, uri, annotations.current, stampImages.toMap())
+        return withContext(Dispatchers.IO) {
+            val out = java.io.File.createTempFile("redacted-", ".pdf", context.cacheDir)
+            try {
+                PdfTools.redact(context, annotated, boxes, out)
+                output.savePdf(out, "${displayName.removeSuffix(".pdf").removeSuffix(".PDF")} (redacted).pdf")
+            } finally {
+                annotated.delete()
+                out.delete()
+            }
+        }
     }
 
     /** Re-reads the whole file, e.g. after its pages were reorganised. */

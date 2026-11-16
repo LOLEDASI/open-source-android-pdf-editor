@@ -104,6 +104,16 @@ import com.mobile.pdfeditor.annot.InkTool
 import com.mobile.pdfeditor.annot.PagePoint
 import com.mobile.pdfeditor.annot.PageRect
 import com.mobile.pdfeditor.annot.TextBox
+import com.mobile.pdfeditor.pdf.WrongPasswordException
+import com.mobile.pdfeditor.ui.tools.OpenMode
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.mobile.pdfeditor.annot.FieldKind
 import com.mobile.pdfeditor.annot.FormField
 import com.mobile.pdfeditor.annot.FormValues
@@ -135,6 +145,14 @@ private class InkUi(
 )
 
 /** What the page list needs to show and edit placed signatures. */
+/** Areas marked for redaction. */
+private class RedactUi(
+    val active: Boolean,
+    val byPage: Map<Int, List<PageRect>>,
+    val onAdd: (Int, PageRect) -> Unit,
+    val onRemove: (Int, PageRect) -> Unit,
+)
+
 /** What the page list needs to show and fill form fields. */
 private class FormUi(
     val byPage: Map<Int, List<Pair<FormField, FormWidget>>>,
@@ -192,6 +210,9 @@ fun ViewerScreen(
     /** A one-off message to show when the viewer opens (e.g. where an import was saved). */
     notice: String? = null,
     onNoticeShown: () -> Unit = {},
+    /** Open straight into the page organizer or redaction (from the Tools tab). */
+    startMode: OpenMode = OpenMode.View,
+    onStartModeUsed: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -220,6 +241,25 @@ fun ViewerScreen(
     val listState = rememberLazyListState()
     var textMode by rememberSaveable { mutableStateOf(false) }
     var formMode by rememberSaveable { mutableStateOf(false) }
+    var redactMode by rememberSaveable { mutableStateOf(false) }
+    val redactBoxes = remember { mutableStateMapOf<Int, List<PageRect>>() }
+    var redacting by remember { mutableStateOf(false) }
+    var unlockError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(startMode, inkStatus) {
+        if (startMode == OpenMode.View) return@LaunchedEffect
+        when (val st = inkStatus) {
+            InkStatus.Ready -> {
+                if (startMode == OpenMode.Pages) organizing = true
+                if (startMode == OpenMode.Redact) {
+                    redactMode = true
+                    scope.launch { snackbar.showSnackbar("Drag over anything you want removed for good") }
+                }
+                onStartModeUsed()
+            }
+            is InkStatus.Unavailable -> { scope.launch { snackbar.showSnackbar(st.reason.replace("annotated", "edited")) }; onStartModeUsed() }
+            InkStatus.Loading -> Unit
+        }
+    }
     val formFields by controller.formFields.collectAsState()
     /** Field being typed into, with its live value (committed on Done / Next). */
     var formEdit by remember { mutableStateOf<Pair<FormField, String>?>(null) }
@@ -344,6 +384,7 @@ fun ViewerScreen(
 
     BackHandler {
         when {
+            redactMode -> { redactMode = false; redactBoxes.clear() }
             draft != null -> commitDraft()
             formEdit != null -> commitFormEdit()
             formMode -> formMode = false
@@ -421,7 +462,29 @@ fun ViewerScreen(
         bottomBar = {
             val editing = draft
             val fe = formEdit
-            if (ready != null && fe != null) {
+            if (ready != null && redactMode) {
+                RedactBar(
+                    count = redactBoxes.values.sumOf { it.size },
+                    working = redacting,
+                    onCancel = { redactMode = false; redactBoxes.clear() },
+                    onApply = {
+                        scope.launch {
+                            redacting = true
+                            try {
+                                val result = controller.redactCopy(redactBoxes.toMap())
+                                redactMode = false
+                                redactBoxes.clear()
+                                message("Saved a redacted copy to Downloads/PDF Editor")
+                                onOpenDocument(result.toString())
+                            } catch (_: Exception) {
+                                message("Couldn't redact this PDF.")
+                            } finally {
+                                redacting = false
+                            }
+                        }
+                    },
+                )
+            } else if (ready != null && fe != null) {
                 val next = FormValues.nextEditable(formFields, fe.first.name)
                 FormTextBar(
                     field = fe.first,
@@ -505,6 +568,26 @@ fun ViewerScreen(
             when (val s = state) {
                 ViewerUiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 is ViewerUiState.Error -> ErrorState(s.message, onBack, Modifier.align(Alignment.Center))
+                is ViewerUiState.Locked -> UnlockPrompt(
+                    name = s.name,
+                    error = unlockError,
+                    onBack = onBack,
+                    onUnlock = { pw ->
+                        scope.launch {
+                            try {
+                                val copy = controller.unlockCopy(pw)
+                                unlockError = null
+                                message("Saved an unlocked copy to Downloads/PDF Editor")
+                                onOpenDocument(copy.toString())
+                            } catch (e: WrongPasswordException) {
+                                unlockError = e.message
+                            } catch (_: Exception) {
+                                unlockError = "Couldn't unlock this PDF."
+                            }
+                        }
+                    },
+                    modifier = Modifier.align(Alignment.Center),
+                )
                 is ViewerUiState.Ready -> {
                     val strokesByPage = remember(ink.strokes) { ink.strokes.groupBy { it.page } }
                     val stampsByPage = remember(ink.stamps) { ink.stamps.groupBy { it.page } }
@@ -520,6 +603,12 @@ fun ViewerScreen(
                         pageSizes = s.pageSizes,
                         controller = controller,
                         listState = listState,
+                        redact = RedactUi(
+                            active = redactMode,
+                            byPage = redactBoxes,
+                            onAdd = { page, r -> redactBoxes[page] = redactBoxes[page].orEmpty() + r },
+                            onRemove = { page, r -> redactBoxes[page] = redactBoxes[page].orEmpty() - r },
+                        ),
                         forms = FormUi(
                             byPage = formsByPage,
                             values = formEdit?.let { (f, v) -> ink.forms + (f.name to v) } ?: ink.forms,
@@ -710,6 +799,7 @@ private fun PageList(
     pageSizes: List<Size>,
     controller: ViewerController,
     listState: LazyListState,
+    redact: RedactUi,
     forms: FormUi,
     texts: TextUi,
     stamps: StampUi,
@@ -721,7 +811,7 @@ private fun PageList(
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
-    val drawing by rememberUpdatedState(ink.tool != null)
+    val drawing by rememberUpdatedState(ink.tool != null || redact.active)
 
     // Re-render sharper bitmaps once a zoom gesture settles.
     var quality by remember { mutableFloatStateOf(1f) }
@@ -772,8 +862,8 @@ private fun PageList(
                     } while (event.changes.any { it.pressed })
                 }
             }
-            .pointerInput(ink.tool == null) {
-                if (ink.tool != null) return@pointerInput // double-tap would leave dots while drawing
+            .pointerInput(ink.tool == null && !redact.active) {
+                if (ink.tool != null || redact.active) return@pointerInput // double-tap would leave dots while drawing
                 detectTapGestures(onTap = { deselect() }, onDoubleTap = { tap ->
                     if (scale > 1f) {
                         scale = 1f
@@ -805,7 +895,7 @@ private fun PageList(
                 },
         ) {
             itemsIndexed(pageSizes) { index, size ->
-                PageItem(index, size, renderWidth, controller, ink, stamps, texts, forms)
+                PageItem(index, size, renderWidth, controller, ink, stamps, texts, forms, redact)
             }
         }
 
@@ -819,7 +909,7 @@ private fun PageList(
 }
 
 @Composable
-private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerController, ink: InkUi, stamps: StampUi, texts: TextUi, forms: FormUi) {
+private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerController, ink: InkUi, stamps: StampUi, texts: TextUi, forms: FormUi, redact: RedactUi) {
     var bitmap by remember(index) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(index, widthPx) {
         controller.cached(index, widthPx)?.let { bitmap = it.asImageBitmap(); return@LaunchedEffect }
@@ -865,6 +955,13 @@ private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerCon
             onMove = texts.onMove,
             onDelete = texts.onDelete,
             modifier = Modifier.testTag("textLayer-$index"),
+        )
+        RedactLayer(
+            pageWidthPt = size.width.toFloat(),
+            boxes = redact.byPage[index].orEmpty(),
+            active = redact.active,
+            onAdd = { redact.onAdd(index, it) },
+            onRemove = { redact.onRemove(index, it) },
         )
         StampLayer(
             pageWidthPt = size.width.toFloat(),
@@ -927,6 +1024,66 @@ private fun EditModeBar(annotating: Boolean, textMode: Boolean, formMode: Boolea
                     indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                 ),
             )
+        }
+    }
+}
+
+@Composable
+private fun RedactBar(count: Int, working: Boolean, onCancel: () -> Unit, onApply: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            Text(
+                if (count == 0) "Drag over text or images to mark them. Tap a box to unmark it."
+                else "$count area${if (count == 1) "" else "s"} marked. Applying saves a new copy where they're removed for good.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onCancel, enabled = !working) { Text("Cancel") }
+                Box(Modifier.weight(1f))
+                if (working) CircularProgressIndicator(Modifier.size(24.dp).padding(end = 8.dp))
+                Button(
+                    onClick = onApply,
+                    enabled = count > 0 && !working,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) { Text("Apply redactions") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnlockPrompt(name: String, error: String?, onBack: () -> Unit, onUnlock: (String) -> Unit, modifier: Modifier) {
+    var pw by remember { mutableStateOf("") }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = modifier.padding(32.dp),
+    ) {
+        Icon(Icons.Outlined.Lock, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
+        Text("$name is password-protected", textAlign = TextAlign.Center, style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Enter the password to save an unlocked copy you can read and edit.",
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = pw,
+            onValueChange = { pw = it },
+            label = { Text("Password") },
+            singleLine = true,
+            isError = error != null,
+            supportingText = error?.let { { Text(it) } },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onBack) { Text("Back") }
+            Button(onClick = { onUnlock(pw) }, enabled = pw.isNotEmpty()) { Text("Unlock") }
         }
     }
 }
