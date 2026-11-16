@@ -4,6 +4,12 @@ A free, open-source PDF editor for Android. No account, no subscription, no ads,
 
 Built with Kotlin and Jetpack Compose.
 
+## Download
+
+**[⬇ Download the APK](https://github.com/LOLEDASI/open-source-pdf-editor/releases/latest/download/open-source-pdf-editor.apk)** (Android 8.0 or newer)
+
+To install: open the downloaded file on your phone. If Android asks, allow your browser to install unknown apps, then tap **Install**. Older versions are on the [Releases page](https://github.com/LOLEDASI/open-source-pdf-editor/releases).
+
 ## What it does
 
 - **Open and read PDFs** from any app or file manager ("Open with" works too), with smooth scrolling, pinch-to-zoom and double-tap zoom.

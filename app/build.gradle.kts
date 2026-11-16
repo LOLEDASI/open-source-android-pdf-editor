@@ -1,6 +1,13 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+// Release signing key lives in signing/ (git-ignored). Without it, release builds are unsigned.
+val signingProps = rootProject.file("signing/keystore.properties").takeIf { it.exists() }?.let { f ->
+    Properties().apply { f.inputStream().use { load(it) } }
 }
 
 android {
@@ -16,10 +23,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (signingProps != null) {
+            create("release") {
+                storeFile = file(signingProps.getProperty("storeFile"))
+                storePassword = signingProps.getProperty("storePassword")
+                keyAlias = signingProps.getProperty("keyAlias")
+                keyPassword = signingProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            // Code shrinking stays off for now: the release build then runs exactly the code the
+            // tests exercise (PdfBox relies on classes R8 would otherwise strip).
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

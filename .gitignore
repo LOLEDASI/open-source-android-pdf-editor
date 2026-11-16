@@ -11,3 +11,10 @@
 .cxx/
 *.apk
 *.aab
+
+# Release signing key and its passwords: never commit
+signing/
+*.keystore
+*.jks
+keystore.properties
+/dist/
