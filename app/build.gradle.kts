@@ -40,12 +40,19 @@ android {
             // tests exercise (PdfBox relies on classes R8 would otherwise strip).
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release")
+            // Phones are ARM; the x86 copies of the text-recognition engine only serve emulators.
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    packaging {
+        // Post-quantum crypto tables pulled in by BouncyCastle; PDF encryption doesn't use them.
+        resources.excludes += "org/bouncycastle/pqc/**"
     }
 
     buildFeatures {
