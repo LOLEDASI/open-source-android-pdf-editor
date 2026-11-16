@@ -73,6 +73,8 @@ private sealed interface Step {
     data class Unlock(val file: File, val name: String, val error: String? = null) : Step
     data class Watermark(val file: File, val name: String) : Step
     data class ConfirmFlatten(val file: File, val name: String) : Step
+    data class MorePhotos(val shots: List<Uri>) : Step
+    data object ScannerClosed : Step
 }
 
 /**
@@ -108,6 +110,83 @@ fun ToolHost(
         }
     }
 
+    /** Adds a text layer (if any page needs one), saves as [name] and opens it. */
+    suspend fun ocrSaveOpen(file: File, name: String, alwaysSave: Boolean) {
+        val out = File.createTempFile("ocr-", ".pdf", context.cacheDir)
+        val pages = try {
+            withContext(Dispatchers.IO) {
+                com.mobile.pdfeditor.pdf.Ocr.makeSearchable(file, out) { done, total ->
+                    working = if (done < total) "Reading text… page ${done + 1} of $total" else "Saving…"
+                }
+            }
+        } catch (_: Exception) {
+            -1 // recognition unavailable: keep the PDF as it is
+        }
+        val result = when {
+            pages > 0 -> withContext(Dispatchers.IO) { output.savePdf(out, name) }
+            alwaysSave -> withContext(Dispatchers.IO) { output.savePdf(file, name) }
+            else -> null
+        }
+        out.delete()
+        when {
+            result == null -> showMessage("This PDF already has selectable text.")
+            else -> {
+                if (pages > 0) showMessage("Text is now searchable and editable")
+                onOpen(result, OpenMode.View)
+            }
+        }
+    }
+
+    fun scanName() = "Scan ${java.text.SimpleDateFormat("yyyy-MM-dd HHmm", java.util.Locale.US).format(java.util.Date())}.pdf"
+
+    // Camera fallback for phones without Google's document scanner.
+    var cameraTarget by remember { mutableStateOf<Uri?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val shot = cameraTarget
+        cameraTarget = null
+        val previous = (step as? Step.MorePhotos)?.shots.orEmpty()
+        step = if (ok && shot != null) Step.MorePhotos(previous + shot) else previous.takeIf { it.isNotEmpty() }?.let { Step.MorePhotos(it) }
+    }
+    fun takePhoto() {
+        val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+        val f = File(dir, "shot-${System.currentTimeMillis()}.jpg")
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", f)
+        cameraTarget = uri
+        camera.launch(uri)
+    }
+
+    val scanner = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+        if (res.resultCode != android.app.Activity.RESULT_OK) {
+            // Cancelled, or the scanner couldn't start (e.g. its module failed to download).
+            step = Step.ScannerClosed
+            return@rememberLauncherForActivityResult
+        }
+        val pdf = com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult.fromActivityResultIntent(res.data)?.pdf?.uri
+            ?: return@rememberLauncherForActivityResult
+        run("Saving scan…") {
+            val file = withContext(Dispatchers.IO) { PdfTools.copyToCache(context, pdf) }
+            ocrSaveOpen(file, scanName(), alwaysSave = true)
+            file.delete()
+        }
+    }
+    fun startScan() {
+        val activity = context.findActivity()
+        if (activity == null) { takePhoto(); return }
+        val options = com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.Builder()
+            .setGalleryImportAllowed(true)
+            .setPageLimit(100)
+            .setResultFormats(com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
+            .setScannerMode(com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+            .build()
+        com.google.mlkit.vision.documentscanner.GmsDocumentScanning.getClient(options)
+            .getStartScanIntent(activity)
+            .addOnSuccessListener { sender -> scanner.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build()) }
+            .addOnFailureListener {
+                showMessage("Google's scanner isn't available on this phone, so using the camera instead")
+                takePhoto()
+            }
+    }
+
     fun nameOf(uri: Uri) = PdfDocumentHandle.readMeta(context, uri).name.removeSuffix(".pdf").removeSuffix(".PDF")
 
     val pickOne = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -126,6 +205,10 @@ fun ToolHost(
                     ToolId.Split -> step = Step.Split(file, name, withContext(Dispatchers.IO) { PdfTools.pageCount(file) })
                     ToolId.Watermark -> step = Step.Watermark(file, name)
                     ToolId.Flatten -> step = Step.ConfirmFlatten(file, name)
+                    ToolId.Ocr -> {
+                        working = "Reading text…"
+                        ocrSaveOpen(file, "$name (searchable).pdf", alwaysSave = false)
+                    }
                     ToolId.Compress -> {
                         working = "Compressing…"
                         val out = File.createTempFile("out-", ".pdf", context.cacheDir)
@@ -163,7 +246,7 @@ fun ToolHost(
         when (tool) {
             ToolId.Merge -> pickMany.launch(arrayOf("application/pdf"))
             ToolId.ImagesToPdf -> pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            ToolId.Scan, ToolId.Ocr -> { pending = null; showMessage("Coming in the next update") }
+            ToolId.Scan -> { pending = null; startScan() }
             else -> pickOne.launch(arrayOf("application/pdf"))
         }
     }
@@ -268,6 +351,36 @@ fun ToolHost(
                 onOpen(result, OpenMode.View)
             }
         }
+        Step.ScannerClosed -> AlertDialog(
+            onDismissRequest = { step = null },
+            title = { Text("No pages scanned") },
+            text = { Text("If the scanner didn't open properly, you can take photos of the pages with the camera instead.") },
+            confirmButton = { TextButton(onClick = { step = null; takePhoto() }) { Text("Use camera") } },
+            dismissButton = { TextButton(onClick = { step = null }) { Text("Cancel") } },
+        )
+        is Step.MorePhotos -> AlertDialog(
+            onDismissRequest = {},
+            title = { Text("${s.shots.size} page${if (s.shots.size == 1) "" else "s"} captured") },
+            text = { Text("Take another photo, or finish to make the PDF.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    step = null
+                    run("Creating PDF…") {
+                        val bitmaps = withContext(Dispatchers.IO) { s.shots.mapNotNull { SignatureRender.decodePhoto(context, it, maxSide = 2400) } }
+                        val pdf = File.createTempFile("scan-", ".pdf", context.cacheDir)
+                        withContext(Dispatchers.IO) { PdfTools.imagesToPdf(bitmaps, pdf, a4 = true) }
+                        ocrSaveOpen(pdf, scanName(), alwaysSave = true)
+                        pdf.delete()
+                    }
+                }) { Text("Finish") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { step = null }) { Text("Discard") }
+                    TextButton(onClick = { takePhoto() }) { Text("Add page") }
+                }
+            },
+        )
         is Step.ConfirmFlatten -> AlertDialog(
             onDismissRequest = { step = null },
             title = { Text("Flatten PDF?") },
@@ -300,6 +413,15 @@ fun ToolHost(
             },
         )
     }
+}
+
+private fun Context.findActivity(): android.app.Activity? {
+    var c: Context? = this
+    while (c is android.content.ContextWrapper) {
+        if (c is android.app.Activity) return c
+        c = c.baseContext
+    }
+    return null
 }
 
 /** Renders each page at 150 dpi and saves it to Pictures/PDF Editor. Returns how many were saved. */
