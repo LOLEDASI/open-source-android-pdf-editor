@@ -2,7 +2,7 @@
 
 Free PDF editor for Android. Got tired of every PDF app wanting a subscription or an account just to sign something, so here's one that doesn't.
 
-**[Download the APK](https://github.com/LOLEDASI/open-source-pdf-editor/releases/latest/download/open-source-pdf-editor.apk)** (Android 8+)
+**[Download the APK](https://github.com/LOLEDASI/open-source-android-pdf-editor/releases/latest/download/open-source-pdf-editor.apk)** (Android 8+)
 
 Open the file on your phone to install it. Android will probably ask you to allow installs from your browser first.
 
