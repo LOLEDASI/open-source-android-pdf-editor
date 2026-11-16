@@ -485,14 +485,14 @@ private fun EmptyState(hasAnyFiles: Boolean, onOpenPicker: () -> Unit) {
 @Composable
 private fun OpenLinkDialog(onOpen: (String) -> Unit, onDismiss: () -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
-    val url = ImportNames.extractUrl(text)
+    val url = ImportNames.pdfUrl(text)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Open from link") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Paste a link to a PDF. It will be downloaded and saved to Downloads/PDF Editor.",
+                    "Paste a link to a PDF, or a whole message with one in it. It will be downloaded and saved to Downloads/PDF Editor.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

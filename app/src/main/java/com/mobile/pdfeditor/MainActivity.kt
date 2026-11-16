@@ -61,7 +61,7 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
-                val url = ImportNames.extractUrl(text)
+                val url = ImportNames.pdfUrl(text)
                 when {
                     url != null -> incoming.value = IncomingPdf.Link(url)
                     stream != null -> incoming.value = IncomingPdf.Shared(stream)

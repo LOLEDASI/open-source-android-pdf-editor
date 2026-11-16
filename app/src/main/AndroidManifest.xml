@@ -39,6 +39,22 @@
                 <data android:mimeType="application/x-pdf" />
             </intent-filter>
 
+            <!-- Some apps hand over PDFs as a generic "file" type; accept those when the name ends in .pdf -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/download" />
+                <data android:pathPattern=".*\\.pdf" />
+                <data android:pathPattern=".*\\..*\\.pdf" />
+                <data android:pathPattern=".*\\..*\\..*\\.pdf" />
+                <data android:pathPattern=".*\\.PDF" />
+            </intent-filter>
+
             <!-- Links to PDFs (typed as PDF, or ending in .pdf) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

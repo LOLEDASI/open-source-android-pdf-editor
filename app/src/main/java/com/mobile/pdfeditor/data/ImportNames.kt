@@ -8,8 +8,25 @@ object ImportNames {
     private val illegal = Regex("""[\\/:*?"<>|\u0000-\u001F]""")
 
     /** First http(s) URL in shared text such as "Q3 report: https://x.com/r.pdf". */
-    fun extractUrl(text: String): String? =
-        urlRegex.find(text)?.value?.trimEnd('.', ',', ')', ']', ';', '!', '?')
+    fun extractUrl(text: String): String? = extractUrls(text).firstOrNull()
+
+    fun extractUrls(text: String): List<String> =
+        urlRegex.findAll(text).map { it.value.trimEnd('.', ',', ')', ']', ';', '!', '?', '*', '_') }.toList()
+
+    /**
+     * The link most likely to be the PDF in shared text. Apps such as Finqalab share messages with
+     * several links (e.g. a notice image and the notice PDF), so prefer one whose path ends in
+     * .pdf, then one that mentions pdf/document, and skip obvious images.
+     */
+    fun pdfUrl(text: String): String? {
+        val urls = extractUrls(text)
+        fun path(u: String) = u.substringBefore('?').substringBefore('#').lowercase()
+        val images = listOf(".gif", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".bmp")
+        return urls.firstOrNull { path(it).endsWith(".pdf") }
+            ?: urls.firstOrNull { u -> u.lowercase().let { "pdf" in it || "document" in it } && images.none { path(u).endsWith(it) } }
+            ?: urls.firstOrNull { u -> images.none { path(u).endsWith(it) } }
+            ?: urls.firstOrNull()
+    }
 
     /**
      * A file name for a downloaded PDF: Content-Disposition's filename if present,
