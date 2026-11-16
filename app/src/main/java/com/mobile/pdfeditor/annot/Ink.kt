@@ -66,4 +66,6 @@ data class Annotations(
     val strokes: List<InkStroke> = emptyList(),
     val stamps: List<SignatureStamp> = emptyList(),
     val texts: List<TextBox> = emptyList(),
+    /** Form field values by field name. */
+    val forms: Map<String, String> = emptyMap(),
 )

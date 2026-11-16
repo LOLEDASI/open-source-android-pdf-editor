@@ -104,6 +104,10 @@ import com.mobile.pdfeditor.annot.InkTool
 import com.mobile.pdfeditor.annot.PagePoint
 import com.mobile.pdfeditor.annot.PageRect
 import com.mobile.pdfeditor.annot.TextBox
+import com.mobile.pdfeditor.annot.FieldKind
+import com.mobile.pdfeditor.annot.FormField
+import com.mobile.pdfeditor.annot.FormValues
+import com.mobile.pdfeditor.annot.FormWidget
 import com.mobile.pdfeditor.annot.SignatureStamp
 import com.mobile.pdfeditor.annot.StampGeometry
 import com.mobile.pdfeditor.data.RecentFilesRepository
@@ -131,6 +135,15 @@ private class InkUi(
 )
 
 /** What the page list needs to show and edit placed signatures. */
+/** What the page list needs to show and fill form fields. */
+private class FormUi(
+    val byPage: Map<Int, List<Pair<FormField, FormWidget>>>,
+    val values: Map<String, String>,
+    val active: Boolean,
+    val editing: String?,
+    val onTap: (FormField, FormWidget) -> Unit,
+)
+
 /** What the page list needs to show and edit text boxes. */
 private class TextUi(
     val textsByPage: Map<Int, List<TextBox>>,
@@ -206,10 +219,30 @@ fun ViewerScreen(
     var extractPlan by remember { mutableStateOf<PagePlan?>(null) }
     val listState = rememberLazyListState()
     var textMode by rememberSaveable { mutableStateOf(false) }
+    var formMode by rememberSaveable { mutableStateOf(false) }
+    val formFields by controller.formFields.collectAsState()
+    /** Field being typed into, with its live value (committed on Done / Next). */
+    var formEdit by remember { mutableStateOf<Pair<FormField, String>?>(null) }
+    var choiceField by remember { mutableStateOf<FormField?>(null) }
     var selectedText by remember { mutableStateOf<Long?>(null) }
     /** The text box being typed into; committed to the undo history on Done. */
     var draft by remember { mutableStateOf<TextBox?>(null) }
     LaunchedEffect(annotating) { if (annotating) selectedStamp = null }
+
+    fun commitFormEdit() {
+        val (field, value) = formEdit ?: return
+        formEdit = null
+        controller.annotations.setForm(field.name, value)
+    }
+
+    fun startFormEdit(field: FormField) {
+        commitFormEdit()
+        when (field.kind) {
+            FieldKind.Text -> formEdit = field to (controller.annotations.current.forms[field.name] ?: "")
+            FieldKind.Choice -> choiceField = field
+            else -> Unit
+        }
+    }
 
     fun commitDraft() {
         val d = draft ?: return
@@ -312,6 +345,8 @@ fun ViewerScreen(
     BackHandler {
         when {
             draft != null -> commitDraft()
+            formEdit != null -> commitFormEdit()
+            formMode -> formMode = false
             textMode -> { textMode = false; selectedText = null }
             annotating -> annotating = false
             else -> leave()
@@ -385,7 +420,18 @@ fun ViewerScreen(
         },
         bottomBar = {
             val editing = draft
-            if (ready != null && editing != null) {
+            val fe = formEdit
+            if (ready != null && fe != null) {
+                val next = FormValues.nextEditable(formFields, fe.first.name)
+                FormTextBar(
+                    field = fe.first,
+                    value = fe.second,
+                    hasNext = next != null,
+                    onChange = { formEdit = fe.first to it },
+                    onNext = { next?.let { startFormEdit(it) } ?: commitFormEdit() },
+                    onDone = { commitFormEdit() },
+                )
+            } else if (ready != null && editing != null) {
                 TextEditorBar(
                     draft = editing,
                     onChange = { draft = it },
@@ -397,11 +443,26 @@ fun ViewerScreen(
                     },
                 )
             } else if (ready != null) {
-                EditModeBar(annotating = annotating, textMode = textMode, onPick = { label ->
-                    if (label == EDIT_TEXT) {
+                EditModeBar(annotating = annotating, textMode = textMode, formMode = formMode, onPick = { label ->
+                    if (label == FILL_FORM) {
+                        when (val s = inkStatus) {
+                            InkStatus.Ready -> when {
+                                formMode -> formMode = false
+                                formFields.isEmpty() -> message("This PDF has no fillable fields. Use Edit text to type anywhere.")
+                                else -> {
+                                    commitDraft(); annotating = false; textMode = false; selectedStamp = null
+                                    formMode = true
+                                    message("Tap a highlighted field to fill it in")
+                                }
+                            }
+                            InkStatus.Loading -> message("Getting the document ready…")
+                            is InkStatus.Unavailable -> message(s.reason.replace("annotated", "filled in"))
+                        }
+                    } else if (label == EDIT_TEXT) {
                         when (val s = inkStatus) {
                             InkStatus.Ready -> {
                                 textMode = !textMode
+                                formMode = false
                                 annotating = false
                                 selectedStamp = null
                                 selectedText = null
@@ -412,7 +473,7 @@ fun ViewerScreen(
                         }
                     } else if (label == ANNOTATE) {
                         when (val s = inkStatus) {
-                            InkStatus.Ready -> { annotating = !annotating; textMode = false; commitDraft() }
+                            InkStatus.Ready -> { annotating = !annotating; textMode = false; formMode = false; commitDraft() }
                             InkStatus.Loading -> message("Getting annotations ready…")
                             is InkStatus.Unavailable -> message(s.reason)
                         }
@@ -447,6 +508,9 @@ fun ViewerScreen(
                 is ViewerUiState.Ready -> {
                     val strokesByPage = remember(ink.strokes) { ink.strokes.groupBy { it.page } }
                     val stampsByPage = remember(ink.stamps) { ink.stamps.groupBy { it.page } }
+                    val formsByPage = remember(formFields) {
+                        formFields.flatMap { f -> f.widgets.map { w -> f to w } }.groupBy { it.second.page }
+                    }
                     val textsByPage = remember(ink.texts, draft) {
                         val d = draft
                         val list = if (d == null) ink.texts else ink.texts.filterNot { it.id == d.id } + d
@@ -456,6 +520,22 @@ fun ViewerScreen(
                         pageSizes = s.pageSizes,
                         controller = controller,
                         listState = listState,
+                        forms = FormUi(
+                            byPage = formsByPage,
+                            values = formEdit?.let { (f, v) -> ink.forms + (f.name to v) } ?: ink.forms,
+                            active = formMode,
+                            editing = formEdit?.first?.name,
+                            onTap = { field, widget ->
+                                when (field.kind) {
+                                    FieldKind.Check, FieldKind.Radio -> {
+                                        commitFormEdit()
+                                        FormValues.tap(field, widget, controller.annotations.current.forms[field.name])
+                                            ?.let { controller.annotations.setForm(field.name, it) }
+                                    }
+                                    else -> startFormEdit(field)
+                                }
+                            },
+                        ),
                         texts = TextUi(
                             textsByPage = textsByPage,
                             active = textMode,
@@ -561,6 +641,15 @@ fun ViewerScreen(
         }
     }
 
+    choiceField?.let { field ->
+        ChoiceDialog(
+            field = field,
+            value = ink.forms[field.name],
+            onPick = { controller.annotations.setForm(field.name, it); choiceField = null },
+            onDismiss = { choiceField = null },
+        )
+    }
+
     if (showSignatureSheet) {
         SignatureSheet(
             library = signatures,
@@ -621,6 +710,7 @@ private fun PageList(
     pageSizes: List<Size>,
     controller: ViewerController,
     listState: LazyListState,
+    forms: FormUi,
     texts: TextUi,
     stamps: StampUi,
     ink: InkUi,
@@ -715,7 +805,7 @@ private fun PageList(
                 },
         ) {
             itemsIndexed(pageSizes) { index, size ->
-                PageItem(index, size, renderWidth, controller, ink, stamps, texts)
+                PageItem(index, size, renderWidth, controller, ink, stamps, texts, forms)
             }
         }
 
@@ -729,7 +819,7 @@ private fun PageList(
 }
 
 @Composable
-private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerController, ink: InkUi, stamps: StampUi, texts: TextUi) {
+private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerController, ink: InkUi, stamps: StampUi, texts: TextUi, forms: FormUi) {
     var bitmap by remember(index) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(index, widthPx) {
         controller.cached(index, widthPx)?.let { bitmap = it.asImageBitmap(); return@LaunchedEffect }
@@ -754,6 +844,14 @@ private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerCon
             onStroke = { t, style, pts -> ink.onStroke(index, t, style, pts) },
             onErase = ink.onErase,
             modifier = Modifier.testTag("ink-$index"),
+        )
+        FormLayer(
+            pageWidthPt = size.width.toFloat(),
+            fields = forms.byPage[index].orEmpty(),
+            values = forms.values,
+            active = forms.active,
+            editing = forms.editing,
+            onTap = forms.onTap,
         )
         TextLayer(
             pageWidthPt = size.width.toFloat(),
@@ -802,6 +900,7 @@ private fun PageIndicator(current: Int, total: Int, visible: Boolean, modifier: 
 private const val ANNOTATE = "Annotate"
 private const val SIGN = "Sign"
 private const val EDIT_TEXT = "Edit text"
+private const val FILL_FORM = "Fill form"
 private const val PAGES = "Pages"
 
 private data class EditMode(val label: String, val icon: ImageVector)
@@ -809,17 +908,18 @@ private data class EditMode(val label: String, val icon: ImageVector)
 private val editModes = listOf(
     EditMode(ANNOTATE, Icons.Outlined.Draw),
     EditMode(EDIT_TEXT, Icons.Outlined.TextFields),
-    EditMode("Fill form", Icons.AutoMirrored.Outlined.Assignment),
+    EditMode(FILL_FORM, Icons.AutoMirrored.Outlined.Assignment),
     EditMode(SIGN, Icons.Outlined.Gesture),
     EditMode(PAGES, Icons.Outlined.GridView),
 )
 
 @Composable
-private fun EditModeBar(annotating: Boolean, textMode: Boolean, onPick: (String) -> Unit) {
+private fun EditModeBar(annotating: Boolean, textMode: Boolean, formMode: Boolean, onPick: (String) -> Unit) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
         editModes.forEach { mode ->
             NavigationBarItem(
-                selected = (mode.label == ANNOTATE && annotating) || (mode.label == EDIT_TEXT && textMode),
+                selected = (mode.label == ANNOTATE && annotating) || (mode.label == EDIT_TEXT && textMode) ||
+                    (mode.label == FILL_FORM && formMode),
                 onClick = { onPick(mode.label) },
                 icon = { Icon(mode.icon, contentDescription = null) },
                 label = { Text(mode.label, maxLines = 1) },

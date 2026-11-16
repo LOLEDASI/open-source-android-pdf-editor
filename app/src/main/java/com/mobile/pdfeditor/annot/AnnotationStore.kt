@@ -8,6 +8,7 @@ data class AnnotationSnapshot(
     val strokes: List<InkStroke> = emptyList(),
     val stamps: List<SignatureStamp> = emptyList(),
     val texts: List<TextBox> = emptyList(),
+    val forms: Map<String, String> = emptyMap(),
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     /** Changed since the last load or save. */
@@ -37,10 +38,15 @@ class AnnotationStore {
     fun newId(): Long = nextId++
 
     /** Replace everything with what was read from the file; clears history. */
-    fun load(strokes: List<InkStroke>, stamps: List<SignatureStamp> = emptyList(), texts: List<TextBox> = emptyList()) {
+    fun load(
+        strokes: List<InkStroke>,
+        stamps: List<SignatureStamp> = emptyList(),
+        texts: List<TextBox> = emptyList(),
+        forms: Map<String, String> = emptyMap(),
+    ) {
         undoStack.clear()
         redoStack.clear()
-        current = Annotations(strokes, stamps, texts)
+        current = Annotations(strokes, stamps, texts, forms)
         saved = current
         nextId = ((strokes.map { it.id } + stamps.map { it.id } + texts.map { it.id }).maxOrNull() ?: 0L) + 1
         publish()
@@ -54,6 +60,12 @@ class AnnotationStore {
         val stamp = current.stamps.firstOrNull { it.id == id } ?: return
         if (stamp.rect == rect) return
         commit(current.copy(stamps = current.stamps.map { if (it.id == id) it.copy(rect = rect) else it }))
+    }
+
+    /** Sets one form field's value as one undo step. */
+    fun setForm(name: String, value: String) {
+        if (current.forms[name] == value) return
+        commit(current.copy(forms = current.forms + (name to value)))
     }
 
     /** Adds [box], or replaces the box with the same id, as one undo step. */
@@ -70,6 +82,7 @@ class AnnotationStore {
             strokes = current.strokes.filterNot { it.id in ids },
             stamps = current.stamps.filterNot { it.id in ids },
             texts = current.texts.filterNot { it.id in ids },
+            forms = current.forms,
         )
         if (next != current) commit(next)
     }
@@ -106,6 +119,7 @@ class AnnotationStore {
             strokes = current.strokes,
             stamps = current.stamps,
             texts = current.texts,
+            forms = current.forms,
             canUndo = undoStack.isNotEmpty(),
             canRedo = redoStack.isNotEmpty(),
             dirty = current != saved,

@@ -67,6 +67,10 @@ class ViewerController(
 
     val annotations = AnnotationStore()
 
+    private val _formFields = MutableStateFlow<List<com.mobile.pdfeditor.annot.FormField>>(emptyList())
+    /** The PDF's fillable fields (empty if it has no form). */
+    val formFields: StateFlow<List<com.mobile.pdfeditor.annot.FormField>> = _formFields.asStateFlow()
+
     /** Signature images by key. Never pruned during a session so undo can bring stamps back. */
     val stampImages = mutableStateMapOf<String, Bitmap>()
 
@@ -133,7 +137,8 @@ class ViewerController(
                 InkStatus.Unavailable("This PDF's page structure couldn't be read, so it can't be annotated.")
             } else {
                 stampImages.putAll(ink.images)
-                annotations.load(ink.strokes, ink.stamps, ink.texts)
+                annotations.load(ink.strokes, ink.stamps, ink.texts, ink.form.values)
+                _formFields.value = ink.form.fields
                 InkStatus.Ready
             }
         } catch (_: Exception) {

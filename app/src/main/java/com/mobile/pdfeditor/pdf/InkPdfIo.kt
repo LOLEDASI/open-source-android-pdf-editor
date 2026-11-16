@@ -42,6 +42,7 @@ class InkDocument(
     /** Images for [stamps], keyed by [SignatureStamp.imageKey]. */
     val images: Map<String, Bitmap> = emptyMap(),
     val texts: List<TextBox> = emptyList(),
+    val form: FormData = FormData(emptyList(), emptyMap()),
 )
 
 /**
@@ -83,7 +84,12 @@ object InkPdfIo {
                         readInk(ink, index, boxes[index]).forEach { strokes += it.copy(id = id++) }
                     }
                 }
-                InkDocument(boxes, strokes, stamps, images, texts)
+                val form = try {
+                    FormIo.read(doc, boxes) { r, b -> displayRect(r, b) }
+                } catch (_: Exception) {
+                    FormData(emptyList(), emptyMap())
+                }
+                InkDocument(boxes, strokes, stamps, images, texts, form)
             }
         }
     }
@@ -110,6 +116,7 @@ object InkPdfIo {
                 val stampsByPage = annotations.stamps.groupBy { it.page }
                 val textsByPage = annotations.texts.groupBy { it.page }
                 val fonts = TextBoxPdf.Fonts(doc)
+                FormIo.apply(doc, annotations.forms)
                 // One image object per signature, shared by every placement of it.
                 val xobjects = mutableMapOf<String, PDImageXObject>()
                 doc.pages.forEachIndexed { index, page ->
