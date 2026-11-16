@@ -3,10 +3,15 @@
 
     <!-- Used only to download a PDF the user chose to open from a link. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Optional "On phone" list of every PDF. Android 11+: the user turns on All files access. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 
     <application
         android:name=".PdfEditorApp"
         android:allowBackup="true"
+        android:requestLegacyExternalStorage="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

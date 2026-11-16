@@ -445,9 +445,16 @@ fun ViewerScreen(
                             ) { Text("Save") }
                         } else {
                             IconButton(onClick = {
+                                // Files opened by path must go through our FileProvider to be shared.
+                                val parsed = Uri.parse(uri)
+                                val shareUri = if (parsed.scheme == "file") {
+                                    androidx.core.content.FileProvider.getUriForFile(
+                                        context, "${context.packageName}.files", java.io.File(parsed.path!!),
+                                    )
+                                } else parsed
                                 val send = Intent(Intent.ACTION_SEND)
                                     .setType("application/pdf")
-                                    .putExtra(Intent.EXTRA_STREAM, Uri.parse(uri))
+                                    .putExtra(Intent.EXTRA_STREAM, shareUri)
                                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 context.startActivity(Intent.createChooser(send, "Share PDF"))
                             }) {

@@ -3,4 +3,6 @@
     <external-files-path name="pdfs" path="PDFs/" />
     <!-- Photos taken with the camera fallback for "Scan to PDF". -->
     <cache-path name="camera" path="camera/" />
+    <!-- Lets "Share" hand over PDFs opened from the "On phone" list. -->
+    <external-path name="storage" path="." />
 </paths>

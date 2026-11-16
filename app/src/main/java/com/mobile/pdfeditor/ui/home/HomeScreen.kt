@@ -44,6 +44,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import com.mobile.pdfeditor.data.ImportNames
+import com.mobile.pdfeditor.data.DevicePdf
+import com.mobile.pdfeditor.data.DevicePdfs
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -103,8 +110,42 @@ fun HomeScreen(
         )
     }
     var query by rememberSaveable { mutableStateOf("") }
-    var starredOnly by rememberSaveable { mutableStateOf(false) }
+    var filter by rememberSaveable { mutableStateOf(ListFilter.All) }
+    val starredOnly = filter == ListFilter.Starred
     var sort by rememberSaveable { mutableStateOf(SortOrder.Recent) }
+
+    // "On phone": every PDF on the device, once the user allows access to all files.
+    val context = LocalContext.current
+    var hasAccess by remember { mutableStateOf(DevicePdfs.hasAccess(context)) }
+    var devicePdfs by remember { mutableStateOf<List<DevicePdf>?>(null) }
+    var scanToken by remember { mutableStateOf(0) }
+    LifecycleResumeEffect(Unit) {
+        hasAccess = DevicePdfs.hasAccess(context)
+        scanToken++ // files may have changed while we were away
+        onPauseOrDispose { }
+    }
+    LaunchedEffect(filter, hasAccess, scanToken) {
+        if (filter == ListFilter.Phone && hasAccess) {
+            devicePdfs = try { DevicePdfs.scan(context) } catch (_: Exception) { emptyList() }
+        }
+    }
+    val askLegacy = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasAccess = it }
+    val requestAccess = {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            try {
+                context.startActivity(DevicePdfs.settingsIntent(context))
+            } catch (_: Exception) {
+                context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+        } else {
+            askLegacy.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+    val visibleDevice = remember(devicePdfs, query, sort) {
+        devicePdfs.orEmpty()
+            .filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) || it.folder.contains(query.trim(), ignoreCase = true) }
+            .let { list -> if (sort == SortOrder.Name) list.sortedBy { it.name.lowercase() } else list }
+    }
 
     val visible = remember(files, query, starredOnly, sort) {
         files
@@ -152,13 +193,39 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
                 ) {
-                    Text("Recent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    FilterChip(selected = !starredOnly, onClick = { starredOnly = false }, label = { Text("All") })
-                    FilterChip(selected = starredOnly, onClick = { starredOnly = true }, label = { Text("Starred") })
+                    Text(if (filter == ListFilter.Phone) "On phone" else "Recent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    FilterChip(selected = filter == ListFilter.All, onClick = { filter = ListFilter.All }, label = { Text("All") })
+                    FilterChip(selected = filter == ListFilter.Starred, onClick = { filter = ListFilter.Starred }, label = { Text("Starred") })
+                    FilterChip(selected = filter == ListFilter.Phone, onClick = { filter = ListFilter.Phone }, label = { Text("On phone") })
                 }
             }
 
-            if (visible.isEmpty()) {
+            if (filter == ListFilter.Phone) {
+                when {
+                    !hasAccess -> item { AccessCard(onAllow = requestAccess) }
+                    devicePdfs == null -> item {
+                        Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    }
+                    visibleDevice.isEmpty() -> item {
+                        Text(
+                            if (devicePdfs.isNullOrEmpty()) "No PDFs found on this phone." else "No matching PDFs.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
+                        )
+                    }
+                    else -> {
+                        item {
+                            Text(
+                                "${visibleDevice.size} PDF${if (visibleDevice.size == 1) "" else "s"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                            )
+                        }
+                        items(visibleDevice, key = { "d:" + it.uri }) { pdf -> DeviceRow(pdf, onOpen = { onOpenFile(pdf.uri) }) }
+                    }
+                }
+            } else if (visible.isEmpty()) {
                 item {
                     EmptyState(
                         hasAnyFiles = files.isNotEmpty(),
@@ -306,6 +373,51 @@ private fun FileRow(file: RecentFile, onOpen: () -> Unit, onToggleStar: () -> Un
                         onClick = { menuOpen = false; onRemove() },
                     )
                 }
+            }
+        }
+    }
+}
+
+private enum class ListFilter { All, Starred, Phone }
+
+@Composable
+private fun AccessCard(onAllow: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().padding(16.dp),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("See every PDF on your phone", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Allow access to all files to list PDFs from Downloads, WhatsApp, Documents and everywhere else, " +
+                    "and to save changes straight into them. Nothing leaves your phone.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(onClick = onAllow) { Text("Allow access") }
+        }
+    }
+}
+
+@Composable
+private fun DeviceRow(pdf: DevicePdf, onOpen: () -> Unit) {
+    val context = LocalContext.current
+    val meta = remember(pdf) {
+        listOf(
+            Formatter.formatShortFileSize(context, pdf.sizeBytes),
+            DateUtils.getRelativeTimeSpanString(pdf.modifiedAt).toString(),
+            pdf.folder,
+        ).filter { it.isNotBlank() }.joinToString(" · ")
+    }
+    Surface(onClick = onOpen, color = Color.Transparent, modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Thumbnail(pdf.uri)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(pdf.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
