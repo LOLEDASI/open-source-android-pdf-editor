@@ -65,4 +65,5 @@ data class SignatureStamp(
 data class Annotations(
     val strokes: List<InkStroke> = emptyList(),
     val stamps: List<SignatureStamp> = emptyList(),
+    val texts: List<TextBox> = emptyList(),
 )

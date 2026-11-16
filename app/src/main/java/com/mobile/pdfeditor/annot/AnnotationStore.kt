@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 data class AnnotationSnapshot(
     val strokes: List<InkStroke> = emptyList(),
     val stamps: List<SignatureStamp> = emptyList(),
+    val texts: List<TextBox> = emptyList(),
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     /** Changed since the last load or save. */
@@ -31,16 +32,17 @@ class AnnotationStore {
 
     val strokes: List<InkStroke> get() = current.strokes
     val stamps: List<SignatureStamp> get() = current.stamps
+    val texts: List<TextBox> get() = current.texts
 
     fun newId(): Long = nextId++
 
     /** Replace everything with what was read from the file; clears history. */
-    fun load(strokes: List<InkStroke>, stamps: List<SignatureStamp> = emptyList()) {
+    fun load(strokes: List<InkStroke>, stamps: List<SignatureStamp> = emptyList(), texts: List<TextBox> = emptyList()) {
         undoStack.clear()
         redoStack.clear()
-        current = Annotations(strokes, stamps)
+        current = Annotations(strokes, stamps, texts)
         saved = current
-        nextId = ((strokes.map { it.id } + stamps.map { it.id }).maxOrNull() ?: 0L) + 1
+        nextId = ((strokes.map { it.id } + stamps.map { it.id } + texts.map { it.id }).maxOrNull() ?: 0L) + 1
         publish()
     }
 
@@ -54,12 +56,20 @@ class AnnotationStore {
         commit(current.copy(stamps = current.stamps.map { if (it.id == id) it.copy(rect = rect) else it }))
     }
 
-    /** Removes strokes and/or stamps with these ids as one undo step. */
+    /** Adds [box], or replaces the box with the same id, as one undo step. */
+    fun putText(box: TextBox) {
+        val exists = current.texts.any { it.id == box.id }
+        val next = if (exists) current.texts.map { if (it.id == box.id) box else it } else current.texts + box
+        if (next != current.texts) commit(current.copy(texts = next))
+    }
+
+    /** Removes strokes, stamps and/or text boxes with these ids as one undo step. */
     fun remove(ids: Set<Long>) {
         if (ids.isEmpty()) return
         val next = Annotations(
             strokes = current.strokes.filterNot { it.id in ids },
             stamps = current.stamps.filterNot { it.id in ids },
+            texts = current.texts.filterNot { it.id in ids },
         )
         if (next != current) commit(next)
     }
@@ -95,6 +105,7 @@ class AnnotationStore {
         _state.value = AnnotationSnapshot(
             strokes = current.strokes,
             stamps = current.stamps,
+            texts = current.texts,
             canUndo = undoStack.isNotEmpty(),
             canRedo = redoStack.isNotEmpty(),
             dirty = current != saved,

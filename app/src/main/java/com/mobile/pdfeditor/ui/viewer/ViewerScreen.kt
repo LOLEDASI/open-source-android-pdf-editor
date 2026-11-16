@@ -103,6 +103,7 @@ import com.mobile.pdfeditor.annot.InkStyle
 import com.mobile.pdfeditor.annot.InkTool
 import com.mobile.pdfeditor.annot.PagePoint
 import com.mobile.pdfeditor.annot.PageRect
+import com.mobile.pdfeditor.annot.TextBox
 import com.mobile.pdfeditor.annot.SignatureStamp
 import com.mobile.pdfeditor.annot.StampGeometry
 import com.mobile.pdfeditor.data.RecentFilesRepository
@@ -130,6 +131,18 @@ private class InkUi(
 )
 
 /** What the page list needs to show and edit placed signatures. */
+/** What the page list needs to show and edit text boxes. */
+private class TextUi(
+    val textsByPage: Map<Int, List<TextBox>>,
+    val active: Boolean,
+    val selectedId: Long?,
+    val onTapEmpty: (page: Int, PagePoint) -> Unit,
+    val onSelect: (Long) -> Unit,
+    val onEdit: (Long) -> Unit,
+    val onMove: (Long, PageRect) -> Unit,
+    val onDelete: (Long) -> Unit,
+)
+
 private class StampUi(
     val stampsByPage: Map<Int, List<SignatureStamp>>,
     val images: Map<String, android.graphics.Bitmap>,
@@ -192,7 +205,22 @@ fun ViewerScreen(
     var pendingPlan by remember { mutableStateOf<PagePlan?>(null) }
     var extractPlan by remember { mutableStateOf<PagePlan?>(null) }
     val listState = rememberLazyListState()
+    var textMode by rememberSaveable { mutableStateOf(false) }
+    var selectedText by remember { mutableStateOf<Long?>(null) }
+    /** The text box being typed into; committed to the undo history on Done. */
+    var draft by remember { mutableStateOf<TextBox?>(null) }
     LaunchedEffect(annotating) { if (annotating) selectedStamp = null }
+
+    fun commitDraft() {
+        val d = draft ?: return
+        draft = null
+        val exists = controller.annotations.texts.any { it.id == d.id }
+        when {
+            d.text.isBlank() && exists -> controller.annotations.remove(setOf(d.id))
+            d.text.isBlank() -> Unit
+            else -> controller.annotations.putText(d)
+        }
+    }
 
     fun message(text: String) {
         scope.launch {
@@ -283,6 +311,8 @@ fun ViewerScreen(
 
     BackHandler {
         when {
+            draft != null -> commitDraft()
+            textMode -> { textMode = false; selectedText = null }
             annotating -> annotating = false
             else -> leave()
         }
@@ -354,23 +384,47 @@ fun ViewerScreen(
             )
         },
         bottomBar = {
-            if (ready != null) {
-                EditModeBar(annotating = annotating, onPick = { label ->
-                    if (label == ANNOTATE) {
+            val editing = draft
+            if (ready != null && editing != null) {
+                TextEditorBar(
+                    draft = editing,
+                    onChange = { draft = it },
+                    onDone = { commitDraft() },
+                    onDelete = {
+                        controller.annotations.remove(setOf(editing.id))
+                        draft = null
+                        selectedText = null
+                    },
+                )
+            } else if (ready != null) {
+                EditModeBar(annotating = annotating, textMode = textMode, onPick = { label ->
+                    if (label == EDIT_TEXT) {
                         when (val s = inkStatus) {
-                            InkStatus.Ready -> annotating = !annotating
+                            InkStatus.Ready -> {
+                                textMode = !textMode
+                                annotating = false
+                                selectedStamp = null
+                                selectedText = null
+                                if (textMode) message("Tap text to change it, or tap empty space to add text")
+                            }
+                            InkStatus.Loading -> message("Getting the document ready…")
+                            is InkStatus.Unavailable -> message(s.reason.replace("annotated", "edited"))
+                        }
+                    } else if (label == ANNOTATE) {
+                        when (val s = inkStatus) {
+                            InkStatus.Ready -> { annotating = !annotating; textMode = false; commitDraft() }
                             InkStatus.Loading -> message("Getting annotations ready…")
                             is InkStatus.Unavailable -> message(s.reason)
                         }
                     } else if (label == PAGES) {
                         when (val s = inkStatus) {
-                            InkStatus.Ready -> { annotating = false; selectedStamp = null; organizing = true }
+                            InkStatus.Ready -> { commitDraft(); annotating = false; textMode = false; selectedStamp = null; organizing = true }
                             InkStatus.Loading -> message("Getting the document ready…")
                             is InkStatus.Unavailable -> message(s.reason.replace("annotated", "edited"))
                         }
                     } else if (label == SIGN) {
                         when (val s = inkStatus) {
-                            InkStatus.Ready -> { annotating = false; showSignatureSheet = true }
+                            InkStatus.Ready -> { commitDraft(); annotating = false; textMode = false; showSignatureSheet = true }
                             InkStatus.Loading -> message("Getting the document ready…")
                             is InkStatus.Unavailable -> message(s.reason.replace("annotated", "signed"))
                         }
@@ -393,10 +447,78 @@ fun ViewerScreen(
                 is ViewerUiState.Ready -> {
                     val strokesByPage = remember(ink.strokes) { ink.strokes.groupBy { it.page } }
                     val stampsByPage = remember(ink.stamps) { ink.stamps.groupBy { it.page } }
+                    val textsByPage = remember(ink.texts, draft) {
+                        val d = draft
+                        val list = if (d == null) ink.texts else ink.texts.filterNot { it.id == d.id } + d
+                        list.groupBy { it.page }
+                    }
                     PageList(
                         pageSizes = s.pageSizes,
                         controller = controller,
                         listState = listState,
+                        texts = TextUi(
+                            textsByPage = textsByPage,
+                            active = textMode,
+                            selectedId = draft?.id ?: selectedText,
+                            onTapEmpty = { page, pt ->
+                                if (draft != null) {
+                                    commitDraft()
+                                } else if (selectedText != null) {
+                                    selectedText = null
+                                } else {
+                                    scope.launch {
+                                        val size = s.pageSizes[page]
+                                        val store = controller.annotations
+                                        val line = controller.textLineAt(page, pt)
+                                        val box = if (line != null) {
+                                            // The app's font can be wider than the PDF's, so make the
+                                            // replacement fit on one line: widen the box towards the
+                                            // page edge, then shrink the text slightly if still needed.
+                                            val x = line.rect.x - 1f
+                                            val maxW = size.width - x - 2f
+                                            val paint = android.graphics.Paint().apply {
+                                                typeface = if (line.bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
+                                            }
+                                            fun need(pt: Float) = paint.apply { textSize = pt }.measureText(line.text) + TextBox.PAD * 2 + 2f
+                                            var sizePt = line.sizePt
+                                            while (need(sizePt) > maxW && sizePt > line.sizePt * 0.8f) sizePt -= 0.25f
+                                            val w = maxOf(line.rect.w + 4f, need(sizePt)).coerceAtMost(maxW)
+                                            TextBox(
+                                                id = store.newId(), page = page,
+                                                rect = PageRect(x, line.rect.y - 1f, w, line.rect.h + 2f),
+                                                text = line.text, sizePt = sizePt, bold = line.bold, cover = 0xFFFFFF,
+                                            )
+                                        } else {
+                                            val w = minOf(220f, size.width - pt.x - 4f).coerceAtLeast(60f)
+                                            TextBox(
+                                                id = store.newId(), page = page,
+                                                rect = PageRect(
+                                                    pt.x.coerceAtMost(size.width - w),
+                                                    (pt.y - 9f).coerceAtLeast(0f),
+                                                    w,
+                                                    12f * TextBox.LINE_HEIGHT + TextBox.PAD * 2,
+                                                ),
+                                                text = "",
+                                            )
+                                        }
+                                        draft = box
+                                        selectedText = box.id
+                                    }
+                                }
+                            },
+                            onSelect = { commitDraft(); selectedText = it },
+                            onEdit = { id -> controller.annotations.texts.firstOrNull { it.id == id }?.let { draft = it } },
+                            onMove = { id, rect ->
+                                val d = draft
+                                if (d != null && d.id == id) {
+                                    draft = d.copy(rect = rect)
+                                } else {
+                                    controller.annotations.texts.firstOrNull { it.id == id }
+                                        ?.let { controller.annotations.putText(it.copy(rect = rect)) }
+                                }
+                            },
+                            onDelete = { id -> controller.annotations.remove(setOf(id)); draft = null; selectedText = null },
+                        ),
                         stamps = StampUi(
                             stampsByPage = stampsByPage,
                             images = controller.stampImages,
@@ -499,6 +621,7 @@ private fun PageList(
     pageSizes: List<Size>,
     controller: ViewerController,
     listState: LazyListState,
+    texts: TextUi,
     stamps: StampUi,
     ink: InkUi,
     indicatorBottomPadding: androidx.compose.ui.unit.Dp,
@@ -592,7 +715,7 @@ private fun PageList(
                 },
         ) {
             itemsIndexed(pageSizes) { index, size ->
-                PageItem(index, size, renderWidth, controller, ink, stamps)
+                PageItem(index, size, renderWidth, controller, ink, stamps, texts)
             }
         }
 
@@ -606,7 +729,7 @@ private fun PageList(
 }
 
 @Composable
-private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerController, ink: InkUi, stamps: StampUi) {
+private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerController, ink: InkUi, stamps: StampUi, texts: TextUi) {
     var bitmap by remember(index) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(index, widthPx) {
         controller.cached(index, widthPx)?.let { bitmap = it.asImageBitmap(); return@LaunchedEffect }
@@ -631,6 +754,19 @@ private fun PageItem(index: Int, size: Size, widthPx: Int, controller: ViewerCon
             onStroke = { t, style, pts -> ink.onStroke(index, t, style, pts) },
             onErase = ink.onErase,
             modifier = Modifier.testTag("ink-$index"),
+        )
+        TextLayer(
+            pageWidthPt = size.width.toFloat(),
+            pageHeightPt = size.height.toFloat(),
+            boxes = texts.textsByPage[index].orEmpty(),
+            active = texts.active,
+            selectedId = texts.selectedId,
+            onTapEmpty = { pt -> texts.onTapEmpty(index, pt) },
+            onSelect = texts.onSelect,
+            onEdit = texts.onEdit,
+            onMove = texts.onMove,
+            onDelete = texts.onDelete,
+            modifier = Modifier.testTag("textLayer-$index"),
         )
         StampLayer(
             pageWidthPt = size.width.toFloat(),
@@ -665,24 +801,25 @@ private fun PageIndicator(current: Int, total: Int, visible: Boolean, modifier: 
 
 private const val ANNOTATE = "Annotate"
 private const val SIGN = "Sign"
+private const val EDIT_TEXT = "Edit text"
 private const val PAGES = "Pages"
 
 private data class EditMode(val label: String, val icon: ImageVector)
 
 private val editModes = listOf(
     EditMode(ANNOTATE, Icons.Outlined.Draw),
-    EditMode("Edit text", Icons.Outlined.TextFields),
+    EditMode(EDIT_TEXT, Icons.Outlined.TextFields),
     EditMode("Fill form", Icons.AutoMirrored.Outlined.Assignment),
     EditMode(SIGN, Icons.Outlined.Gesture),
     EditMode(PAGES, Icons.Outlined.GridView),
 )
 
 @Composable
-private fun EditModeBar(annotating: Boolean, onPick: (String) -> Unit) {
+private fun EditModeBar(annotating: Boolean, textMode: Boolean, onPick: (String) -> Unit) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
         editModes.forEach { mode ->
             NavigationBarItem(
-                selected = mode.label == ANNOTATE && annotating,
+                selected = (mode.label == ANNOTATE && annotating) || (mode.label == EDIT_TEXT && textMode),
                 onClick = { onPick(mode.label) },
                 icon = { Icon(mode.icon, contentDescription = null) },
                 label = { Text(mode.label, maxLines = 1) },

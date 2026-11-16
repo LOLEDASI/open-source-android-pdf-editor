@@ -9,6 +9,10 @@ import androidx.compose.runtime.mutableStateMapOf
 import com.mobile.pdfeditor.annot.AnnotationStore
 import com.mobile.pdfeditor.annot.SignatureStamp
 import com.mobile.pdfeditor.annot.StampGeometry
+import com.mobile.pdfeditor.annot.PagePoint
+import com.mobile.pdfeditor.annot.TextLine
+import com.mobile.pdfeditor.pdf.TextLines
+import kotlinx.coroutines.sync.withLock
 import com.mobile.pdfeditor.data.RecentFile
 import com.mobile.pdfeditor.data.RecentFilesRepository
 import com.mobile.pdfeditor.pages.PagePlan
@@ -129,7 +133,7 @@ class ViewerController(
                 InkStatus.Unavailable("This PDF's page structure couldn't be read, so it can't be annotated.")
             } else {
                 stampImages.putAll(ink.images)
-                annotations.load(ink.strokes, ink.stamps)
+                annotations.load(ink.strokes, ink.stamps, ink.texts)
                 InkStatus.Ready
             }
         } catch (_: Exception) {
@@ -227,6 +231,43 @@ class ViewerController(
         }
     }
 
+    // Existing text lines, read on demand for "Edit text".
+    private var textDoc: com.tom_roush.pdfbox.pdmodel.PDDocument? = null
+    private var textDocFile: java.io.File? = null
+    private val textLines = HashMap<Int, List<TextLine>>()
+    private val textMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** The line of existing PDF text at [p] on [page], if any. */
+    suspend fun textLineAt(page: Int, p: PagePoint): TextLine? = textMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val lines = textLines.getOrPut(page) {
+                try {
+                    val doc = textDoc ?: run {
+                        val f = java.io.File.createTempFile("text-", ".pdf", context.cacheDir)
+                        context.contentResolver.openInputStream(uri)?.use { i -> f.outputStream().use { i.copyTo(it) } }
+                        textDocFile = f
+                        com.tom_roush.pdfbox.pdmodel.PDDocument.load(f).also { textDoc = it }
+                    }
+                    TextLines.extract(doc, page)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
+            // Prefer the line whose box contains the point; allow a little slack for fingers.
+            lines.firstOrNull { p in it.rect } ?: lines
+                .filter { p.y in (it.rect.y - 4f)..(it.rect.y + it.rect.h + 4f) && p.x in (it.rect.x - 6f)..(it.rect.x + it.rect.w + 6f) }
+                .minByOrNull { kotlin.math.abs(p.y - (it.rect.y + it.rect.h / 2)) }
+        }
+    }
+
+    private fun dropTextIndex() {
+        textLines.clear()
+        try { textDoc?.close() } catch (_: Exception) {}
+        textDoc = null
+        textDocFile?.delete()
+        textDocFile = null
+    }
+
     /** Re-reads the whole file, e.g. after its pages were reorganised. */
     private suspend fun reload() {
         val old = document
@@ -238,6 +279,7 @@ class ViewerController(
         document = doc
         old?.close()
         pageCache.evictAll()
+        dropTextIndex()
         if (doc != null) {
             _state.value = ViewerUiState.Ready(displayName, doc.pageSizes)
             loadInk(doc.pageCount)
@@ -270,6 +312,7 @@ class ViewerController(
     private fun key(index: Int, widthPx: Int) = "$index@$widthPx"
 
     fun close() {
+        dropTextIndex()
         document?.close()
         pageCache.evictAll()
     }

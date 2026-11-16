@@ -10,6 +10,7 @@ import com.mobile.pdfeditor.annot.InkTool
 import com.mobile.pdfeditor.annot.PagePoint
 import com.mobile.pdfeditor.annot.PageRect
 import com.mobile.pdfeditor.annot.SignatureStamp
+import com.mobile.pdfeditor.annot.TextBox
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationRubberStamp
@@ -40,6 +41,7 @@ class InkDocument(
     val stamps: List<SignatureStamp> = emptyList(),
     /** Images for [stamps], keyed by [SignatureStamp.imageKey]. */
     val images: Map<String, Bitmap> = emptyMap(),
+    val texts: List<TextBox> = emptyList(),
 )
 
 /**
@@ -62,8 +64,13 @@ object InkPdfIo {
                 val strokes = mutableListOf<InkStroke>()
                 val stamps = mutableListOf<SignatureStamp>()
                 val images = mutableMapOf<String, Bitmap>()
+                val texts = mutableListOf<TextBox>()
                 doc.pages.forEachIndexed { index, page ->
                     for (annot in page.annotations) {
+                        if (TextBoxPdf.isOurs(annot)) {
+                            texts += TextBoxPdf.read(annot, index, boxes[index], { displayRect(it, boxes[index]) }, id++)
+                            continue
+                        }
                         if (isOurSignature(annot)) {
                             val image = readStampImage(annot) ?: continue
                             val key = "pdf-$id"
@@ -76,7 +83,7 @@ object InkPdfIo {
                         readInk(ink, index, boxes[index]).forEach { strokes += it.copy(id = id++) }
                     }
                 }
-                InkDocument(boxes, strokes, stamps, images)
+                InkDocument(boxes, strokes, stamps, images, texts)
             }
         }
     }
@@ -101,11 +108,13 @@ object InkPdfIo {
                 if (doc.isEncrypted) doc.isAllSecurityToBeRemoved = true
                 val strokesByPage = annotations.strokes.groupBy { it.page }
                 val stampsByPage = annotations.stamps.groupBy { it.page }
+                val textsByPage = annotations.texts.groupBy { it.page }
+                val fonts = TextBoxPdf.Fonts(doc)
                 // One image object per signature, shared by every placement of it.
                 val xobjects = mutableMapOf<String, PDImageXObject>()
                 doc.pages.forEachIndexed { index, page ->
                     val kept = page.annotations.filterNot { a ->
-                        isOurSignature(a) ||
+                        isOurSignature(a) || TextBoxPdf.isOurs(a) ||
                             (a is PDAnnotationMarkup && a.subtype == PDAnnotationMarkup.SUB_TYPE_INK &&
                                 !a.inkList.isNullOrEmpty())
                     }.toMutableList<PDAnnotation>()
@@ -116,6 +125,7 @@ object InkPdfIo {
                         val image = xobjects.getOrPut(stamp.imageKey) { LosslessFactory.createFromImage(doc, bitmap) }
                         kept += buildStamp(doc, stamp, image, box)
                     }
+                    textsByPage[index].orEmpty().forEach { kept += TextBoxPdf.build(doc, it, box, fonts) }
                     page.annotations = kept
                 }
                 doc.save(out)
