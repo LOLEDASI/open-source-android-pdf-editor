@@ -11,7 +11,9 @@ import com.mobile.pdfeditor.annot.SignatureStamp
 import com.mobile.pdfeditor.annot.StampGeometry
 import com.mobile.pdfeditor.data.RecentFile
 import com.mobile.pdfeditor.data.RecentFilesRepository
+import com.mobile.pdfeditor.pages.PagePlan
 import com.mobile.pdfeditor.pdf.InkPdfIo
+import com.mobile.pdfeditor.pdf.PageOps
 import com.mobile.pdfeditor.pdf.PdfDocumentHandle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,21 +137,44 @@ class ViewerController(
         }
     }
 
-    /** Writes the annotations back into the original file. */
-    suspend fun save(): SaveResult = writeTo(uri, overwriteOriginal = true)
+    /** Writes the annotations (and page changes, if [pages] is given) back into the original file. */
+    suspend fun save(pages: PagePlan? = null): SaveResult = writeTo(uri, overwriteOriginal = true, pages = pages)
 
     /** Writes an annotated copy to [target] (picked by the user) and adds it to recents. */
-    suspend fun saveCopy(target: Uri): SaveResult = writeTo(target, overwriteOriginal = false)
+    suspend fun saveCopy(target: Uri, pages: PagePlan? = null): SaveResult =
+        writeTo(target, overwriteOriginal = false, pages = pages)
 
-    private suspend fun writeTo(target: Uri, overwriteOriginal: Boolean): SaveResult {
+    /** Writes just the pages in [pages] (with their annotations) to a new file at [target]. */
+    suspend fun extract(target: Uri, pages: PagePlan): SaveResult =
+        writeTo(target, overwriteOriginal = false, pages = pages, markClean = false)
+
+    private suspend fun writeTo(
+        target: Uri,
+        overwriteOriginal: Boolean,
+        pages: PagePlan? = null,
+        markClean: Boolean = true,
+    ): SaveResult {
         if (_saving.value) return SaveResult.Failed("Already saving")
         _saving.value = true
         val snapshot = annotations.current
         try {
             val temp = try {
-                InkPdfIo.write(context, uri, snapshot, stampImages.toMap())
+                val annotated = InkPdfIo.write(context, uri, snapshot, stampImages.toMap())
+                if (pages == null) {
+                    annotated
+                } else {
+                    withContext(Dispatchers.IO) {
+                        val reordered = java.io.File.createTempFile("pages-", ".pdf", context.cacheDir)
+                        try {
+                            PageOps.apply(annotated, pages, reordered)
+                        } finally {
+                            annotated.delete()
+                        }
+                        reordered
+                    }
+                }
             } catch (_: Exception) {
-                return SaveResult.Failed("Couldn't write the annotations into this PDF.")
+                return SaveResult.Failed("Couldn't write the changes into this PDF.")
             }
             try {
                 withContext(Dispatchers.IO) {
@@ -164,9 +189,14 @@ class ViewerController(
                 temp.delete()
             }
 
-            if (overwriteOriginal) {
+            if (overwriteOriginal && pages != null) {
+                // Pages moved: reload everything (sizes, page count, annotations by page).
+                reload()
+            } else if (overwriteOriginal) {
                 // The renderer reads the file lazily, and the file just changed under it.
                 reopenRenderer()
+            }
+            if (overwriteOriginal) {
                 recents.recordOpened(
                     RecentFile(
                         uri = uri.toString(),
@@ -190,10 +220,27 @@ class ViewerController(
                 )
             }
             // Only clear "unsaved" if nothing was drawn while the save ran.
-            if (annotations.current == snapshot) annotations.markSaved()
+            if (markClean && annotations.current == snapshot) annotations.markSaved()
             return SaveResult.Saved
         } finally {
             _saving.value = false
+        }
+    }
+
+    /** Re-reads the whole file, e.g. after its pages were reorganised. */
+    private suspend fun reload() {
+        val old = document
+        val doc = try {
+            PdfDocumentHandle.open(context, uri)
+        } catch (_: Exception) {
+            null
+        }
+        document = doc
+        old?.close()
+        pageCache.evictAll()
+        if (doc != null) {
+            _state.value = ViewerUiState.Ready(displayName, doc.pageSizes)
+            loadInk(doc.pageCount)
         }
     }
 

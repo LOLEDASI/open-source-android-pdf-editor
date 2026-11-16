@@ -108,6 +108,8 @@ import com.mobile.pdfeditor.annot.StampGeometry
 import com.mobile.pdfeditor.data.RecentFilesRepository
 import com.mobile.pdfeditor.data.SignatureKind
 import com.mobile.pdfeditor.data.SignatureLibrary
+import com.mobile.pdfeditor.pages.PagePlan
+import com.mobile.pdfeditor.ui.pages.PageOrganizer
 import com.mobile.pdfeditor.ui.signature.SignatureSheet
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -186,6 +188,9 @@ fun ViewerScreen(
     var exitAfterSave by remember { mutableStateOf(false) }
     var showSignatureSheet by remember { mutableStateOf(false) }
     var selectedStamp by remember { mutableStateOf<Long?>(null) }
+    var organizing by rememberSaveable { mutableStateOf(false) }
+    var pendingPlan by remember { mutableStateOf<PagePlan?>(null) }
+    var extractPlan by remember { mutableStateOf<PagePlan?>(null) }
     val listState = rememberLazyListState()
     LaunchedEffect(annotating) { if (annotating) selectedStamp = null }
 
@@ -210,28 +215,66 @@ fun ViewerScreen(
             return@rememberLauncherForActivityResult
         }
         scope.launch {
-            when (val r = controller.saveCopy(target)) {
-                SaveResult.Saved -> if (exitAfterSave) onBack() else onOpenDocument(target.toString())
+            val plan = pendingPlan
+            when (val r = controller.saveCopy(target, plan)) {
+                SaveResult.Saved -> {
+                    organizing = false
+                    if (exitAfterSave) onBack() else onOpenDocument(target.toString())
+                }
                 is SaveResult.Failed -> message(r.message)
                 SaveResult.NeedsCopy -> Unit
             }
             exitAfterSave = false
+            pendingPlan = null
         }
     }
 
-    fun save(thenExit: Boolean) {
+    val extractLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { target ->
+        val plan = extractPlan
+        extractPlan = null
+        if (target == null || plan == null) return@rememberLauncherForActivityResult
         scope.launch {
-            when (val r = controller.save()) {
-                SaveResult.Saved -> if (thenExit) onBack() else message("Saved")
+            when (val r = controller.extract(target, plan)) {
+                SaveResult.Saved -> message(if (plan.size == 1) "Extracted 1 page" else "Extracted ${plan.size} pages")
+                is SaveResult.Failed -> message(r.message)
+                SaveResult.NeedsCopy -> Unit
+            }
+        }
+    }
+
+    fun save(thenExit: Boolean, pages: PagePlan? = null) {
+        scope.launch {
+            when (val r = controller.save(pages)) {
+                SaveResult.Saved -> {
+                    if (pages != null) organizing = false
+                    if (thenExit) onBack() else message(if (pages != null) "Pages updated" else "Saved")
+                }
                 SaveResult.NeedsCopy -> {
                     exitAfterSave = thenExit
+                    pendingPlan = pages
                     message("This file can't be changed in place. Choose where to save a copy.")
                     val base = ready?.name?.removeSuffix(".pdf")?.removeSuffix(".PDF") ?: "Document"
-                    copyLauncher.launch("$base (annotated).pdf")
+                    copyLauncher.launch("$base (edited).pdf")
                 }
                 is SaveResult.Failed -> message(r.message)
             }
         }
+    }
+
+    if (organizing && ready != null) {
+        PageOrganizer(
+            pageSizes = ready.pageSizes,
+            saving = saving,
+            renderThumb = { index, width -> controller.render(index, width) },
+            onCancel = { organizing = false },
+            onApply = { plan -> save(thenExit = false, pages = plan) },
+            onExtract = { plan ->
+                extractPlan = plan
+                val base = ready.name.removeSuffix(".pdf").removeSuffix(".PDF")
+                extractLauncher.launch("$base (pages).pdf")
+            },
+        )
+        return
     }
 
     fun leave() {
@@ -318,6 +361,12 @@ fun ViewerScreen(
                             InkStatus.Ready -> annotating = !annotating
                             InkStatus.Loading -> message("Getting annotations ready…")
                             is InkStatus.Unavailable -> message(s.reason)
+                        }
+                    } else if (label == PAGES) {
+                        when (val s = inkStatus) {
+                            InkStatus.Ready -> { annotating = false; selectedStamp = null; organizing = true }
+                            InkStatus.Loading -> message("Getting the document ready…")
+                            is InkStatus.Unavailable -> message(s.reason.replace("annotated", "edited"))
                         }
                     } else if (label == SIGN) {
                         when (val s = inkStatus) {
@@ -616,6 +665,7 @@ private fun PageIndicator(current: Int, total: Int, visible: Boolean, modifier: 
 
 private const val ANNOTATE = "Annotate"
 private const val SIGN = "Sign"
+private const val PAGES = "Pages"
 
 private data class EditMode(val label: String, val icon: ImageVector)
 
@@ -624,7 +674,7 @@ private val editModes = listOf(
     EditMode("Edit text", Icons.Outlined.TextFields),
     EditMode("Fill form", Icons.AutoMirrored.Outlined.Assignment),
     EditMode(SIGN, Icons.Outlined.Gesture),
-    EditMode("Pages", Icons.Outlined.GridView),
+    EditMode(PAGES, Icons.Outlined.GridView),
 )
 
 @Composable
