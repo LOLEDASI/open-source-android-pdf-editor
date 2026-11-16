@@ -159,6 +159,11 @@ fun ViewerScreen(
     onBack: () -> Unit,
     /** Switch the viewer to another file, e.g. a copy the user just saved. */
     onOpenDocument: (String) -> Unit = {},
+    /** Told whenever unsaved changes appear or go away. */
+    onDirtyChange: (Boolean) -> Unit = {},
+    /** A one-off message to show when the viewer opens (e.g. where an import was saved). */
+    notice: String? = null,
+    onNoticeShown: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -188,6 +193,14 @@ fun ViewerScreen(
         scope.launch {
             snackbar.currentSnackbarData?.dismiss()
             snackbar.showSnackbar(text)
+        }
+    }
+
+    LaunchedEffect(ink.dirty) { onDirtyChange(ink.dirty) }
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            message(notice)
+            onNoticeShown()
         }
     }
 

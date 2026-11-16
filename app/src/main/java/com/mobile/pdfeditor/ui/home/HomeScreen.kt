@@ -33,11 +33,17 @@ import androidx.compose.material.icons.outlined.DocumentScanner
 import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import com.mobile.pdfeditor.data.ImportNames
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -83,10 +89,18 @@ fun HomeScreen(
     recents: RecentFilesRepository,
     onOpenPicker: () -> Unit,
     onOpenFile: (String) -> Unit,
+    onOpenLink: (String) -> Unit,
     showMessage: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val files by recents.files.collectAsState()
+    var linkDialog by rememberSaveable { mutableStateOf(false) }
+    if (linkDialog) {
+        OpenLinkDialog(
+            onOpen = { linkDialog = false; onOpenLink(it) },
+            onDismiss = { linkDialog = false },
+        )
+    }
     var query by rememberSaveable { mutableStateOf("") }
     var starredOnly by rememberSaveable { mutableStateOf(false) }
     var sort by rememberSaveable { mutableStateOf(SortOrder.Recent) }
@@ -109,6 +123,9 @@ fun HomeScreen(
                     modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
                 ) {
                     Text("Documents", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { linkDialog = true }) {
+                        Icon(Icons.Outlined.Link, contentDescription = "Open PDF from a link")
+                    }
                     IconButton(onClick = {
                         sort = if (sort == SortOrder.Recent) SortOrder.Name else SortOrder.Recent
                         showMessage(if (sort == SortOrder.Name) "Sorted by name" else "Sorted by last opened")
@@ -350,4 +367,35 @@ private fun EmptyState(hasAnyFiles: Boolean, onOpenPicker: () -> Unit) {
             Button(onClick = onOpenPicker, modifier = Modifier.offset(y = 6.dp)) { Text("Open PDF") }
         }
     }
+}
+
+@Composable
+private fun OpenLinkDialog(onOpen: (String) -> Unit, onDismiss: () -> Unit) {
+    var text by rememberSaveable { mutableStateOf("") }
+    val url = ImportNames.extractUrl(text)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Open from link") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Paste a link to a PDF. It will be downloaded and saved to Downloads/PDF Editor.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    placeholder = { Text("https://…") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { url?.let(onOpen) }, enabled = url != null) { Text("Download") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

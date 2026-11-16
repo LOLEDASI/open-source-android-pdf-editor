@@ -95,6 +95,10 @@ object InkPdfIo {
         val out = File.createTempFile("save-", ".pdf", context.cacheDir)
         withLocalCopy(context, source) { file ->
             PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
+                // Many published reports carry an owner-password lock ("no editing") but open
+                // without a password. Re-encrypting on save fails, and the restriction is only a
+                // flag, so drop it: the saved copy is the user's own annotated document.
+                if (doc.isEncrypted) doc.isAllSecurityToBeRemoved = true
                 val strokesByPage = annotations.strokes.groupBy { it.page }
                 val stampsByPage = annotations.stamps.groupBy { it.page }
                 // One image object per signature, shared by every placement of it.

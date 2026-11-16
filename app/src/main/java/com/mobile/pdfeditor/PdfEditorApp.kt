@@ -1,6 +1,7 @@
 package com.mobile.pdfeditor
 
 import android.app.Application
+import com.mobile.pdfeditor.data.PdfImporter
 import com.mobile.pdfeditor.data.RecentFilesRepository
 import com.mobile.pdfeditor.data.SignatureLibrary
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -10,11 +11,14 @@ class PdfEditorApp : Application() {
         private set
     lateinit var signatures: SignatureLibrary
         private set
+    lateinit var importer: PdfImporter
+        private set
 
     override fun onCreate() {
         super.onCreate()
         PDFBoxResourceLoader.init(this)
         recents = RecentFilesRepository(this)
         signatures = SignatureLibrary(this)
+        importer = PdfImporter(this)
     }
 }
